@@ -13,7 +13,6 @@ const namingModes = {
 };
 
 const state = {
-  mode: "html",
   academicYearKey: "",
   namingMode: namingModes.short,
   activities: [],
@@ -24,18 +23,18 @@ const els = {
   htmlInput: document.querySelector("#htmlInput"),
   htmlFileInput: document.querySelector("#htmlFileInput"),
   dropZone: document.querySelector("#dropZone"),
-  urlInput: document.querySelector("#urlInput"),
-  fetchUrlButton: document.querySelector("#fetchUrlButton"),
   extractButton: document.querySelector("#extractButton"),
   clearButton: document.querySelector("#clearButton"),
   downloadButton: document.querySelector("#downloadButton"),
-  defaultDate: document.querySelector("#defaultDate"),
-  defaultDuration: document.querySelector("#defaultDuration"),
   calendarName: document.querySelector("#calendarName"),
   eventsTable: document.querySelector("#eventsTable"),
   eventCount: document.querySelector("#eventCount"),
   summaryText: document.querySelector("#summaryText"),
   message: document.querySelector("#message"),
+  downloadWeeksButton: document.querySelector("#downloadWeeksButton"),
+  includeTermEnds: document.querySelector("#includeTermEnds"),
+  namingMode: document.querySelector("#namingMode"),
+  alertMinutes: document.querySelector("#alertMinutes"),
 };
 
 const monthNames = {
@@ -81,6 +80,8 @@ const defaultTeachingWeekRanges = [
   { term: "Easter", startDurhamWeek: 41, endDurhamWeek: 49, startTeachingWeek: 21 },
 ];
 
+const fallbackYearKey = "2026-27";
+
 const fallbackTeachingWeekConfig = {
   years: {
     "2026-27": {
@@ -108,13 +109,7 @@ init();
 
 async function init() {
   await loadTeachingWeekConfig();
-  els.defaultDate.value = new Date().toISOString().slice(0, 10);
 
-  document.querySelectorAll("[data-source-mode]").forEach((button) => {
-    button.addEventListener("click", () => setSourceMode(button.dataset.sourceMode));
-  });
-
-  els.fetchUrlButton.addEventListener("click", fetchUrl);
   els.htmlFileInput.addEventListener("change", loadHtmlFile);
   els.dropZone.addEventListener("dragenter", handleDragEnter);
   els.dropZone.addEventListener("dragover", handleDragOver);
@@ -122,8 +117,19 @@ async function init() {
   els.dropZone.addEventListener("drop", handleDrop);
   els.extractButton.addEventListener("click", extractFromCurrentSource);
   els.downloadButton.addEventListener("click", downloadCalendar);
+  els.downloadWeeksButton.addEventListener("click", downloadTeachingWeeksCalendar);
   els.clearButton.addEventListener("click", clearAll);
 
+  els.namingMode.addEventListener("change", () => {
+    state.namingMode = els.namingMode.value;
+    if (state.activities.length > 0) {
+      const academicYear = getSelectedAcademicYearConfig();
+      if (academicYear) {
+        state.events = expandActivitiesToEvents(state.activities, academicYear).filter(dedupeEvents);
+        renderEvents();
+      }
+    }
+  });
   renderEvents();
 }
 
@@ -244,77 +250,15 @@ function isHtmlFile(file) {
   return file.type === "text/html" || name.endsWith(".html") || name.endsWith(".htm");
 }
 
-function setSourceMode(mode) {
-  state.mode = mode;
-  document.querySelectorAll("[data-source-mode]").forEach((button) => {
-    const isActive = button.dataset.sourceMode === mode;
-    button.classList.toggle("is-active", isActive);
-    button.setAttribute("aria-selected", String(isActive));
-  });
-  document.querySelectorAll("[data-panel]").forEach((panel) => {
-    panel.classList.toggle("is-active", panel.dataset.panel === mode);
-  });
-  clearMessage();
-}
-
-async function fetchUrl() {
-  const html = await fetchUrlHtml();
-  if (!html) {
-    return null;
-  }
-
-  els.htmlInput.value = html;
-  setSourceMode("html");
-  showMessage("Fetched the page HTML. Review it if needed, then extract entries.", "note");
-  return html;
-}
-
-async function fetchUrlHtml() {
-  const url = els.urlInput.value.trim();
-  if (!url) {
-    showMessage("Enter a timetable URL first.");
-    return null;
-  }
-
-  try {
-    els.fetchUrlButton.disabled = true;
-    els.extractButton.disabled = true;
-    els.fetchUrlButton.textContent = "Fetching";
-    clearMessage();
-
-    const response = await fetch(url);
-    if (!response.ok) {
-      throw new Error(`The server responded with ${response.status}.`);
-    }
-
-    return await response.text();
-  } catch (error) {
-    showMessage(`Could not fetch that URL from the browser. Many sites block direct static-app reads with CORS. Open the page, copy the timetable HTML or visible text, and paste it here. ${error.message}`);
-    return null;
-  } finally {
-    els.fetchUrlButton.disabled = false;
-    els.extractButton.disabled = false;
-    els.fetchUrlButton.textContent = "Fetch";
-  }
-}
-
-async function extractFromCurrentSource() {
-  let source = state.mode === "url" ? els.urlInput.value.trim() : els.htmlInput.value.trim();
+function extractFromCurrentSource() {
+  const source = els.htmlInput.value.trim();
 
   if (!source) {
     showMessage("Paste or upload a saved Durham timetable HTML file before extracting.");
     return;
   }
 
-  if (state.mode === "url") {
-    source = await fetchUrlHtml();
-    if (!source) {
-      state.activities = [];
-      state.events = [];
-      renderEvents();
-      return;
-    }
-  }
+  state.namingMode = els.namingMode.value;
 
   const result = extractTimetable(source);
   state.activities = result.activities;
@@ -472,7 +416,10 @@ function resolveAcademicYear(doc) {
     };
   }
 
-  const fallbackKey = Object.keys(years)[0];
+  const fallbackKey =
+    years[fallbackYearKey]
+      ? fallbackYearKey
+      : Object.keys(years)[0];
 
   return {
     key: fallbackKey,
@@ -809,17 +756,6 @@ function expandDurhamWeeks(pattern) {
     });
 }
 
-function dateForDurhamWeekDay(anchor, week, dayName) {
-  const dayOffset = dayOffsets[dayName];
-  if (dayOffset === undefined) {
-    return null;
-  }
-
-  const date = new Date(anchor.monday);
-  date.setDate(date.getDate() + ((week - anchor.week) * 7) + (dayOffset - 1));
-  return date;
-}
-
 function dateForAcademicYearWeekDay(academicYear, week, dayName) {
   const dayOffset = dayOffsets[dayName];
   if (dayOffset === undefined) {
@@ -886,218 +822,8 @@ function getDirectTableRows(table) {
   });
 }
 
-function collectCandidateRows(doc, source) {
-  const tableRows = Array.from(doc.querySelectorAll("tr"))
-    .map((row) => Array.from(row.children).map((cell) => cleanText(cell.textContent)).filter(Boolean))
-    .filter((cells) => cells.length >= 2);
-
-  const listRows = Array.from(doc.querySelectorAll("li, article, .event, .lesson, .class, .session"))
-    .map((node) => [cleanText(node.textContent)])
-    .filter((cells) => cells[0]);
-
-  const rawText = doc.body?.innerText || source;
-  const textRows = rawText
-    .split(/\n|(?=\b(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun|Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)\b)|(?=\b\d{1,2}[/-]\d{1,2}[/-]\d{2,4}\b)/i)
-    .map((line) => [cleanText(line)])
-    .filter((cells) => cells[0] && /\d{1,2}[:.]\d{2}|\b\d{1,2}\s*(?:am|pm)\b/i.test(cells[0]));
-
-  return [...tableRows, ...listRows, ...textRows];
-}
-
-function rowToEvent(cells, defaultDate, defaultDuration) {
-  const rowText = cleanText(cells.join(" | "));
-  const date = findDate(rowText, defaultDate);
-  const timeRange = findTimeRange(rowText, defaultDuration);
-
-  if (!date || !timeRange) {
-    return null;
-  }
-
-  const title = findTitle(cells, rowText);
-  if (!title) {
-    return null;
-  }
-
-  const location = findLocation(cells, rowText);
-  const description = cells.length > 1 ? cells.join("\n") : rowText;
-  const start = applyTime(date, timeRange.start);
-  const end = applyTime(date, timeRange.end);
-
-  if (end <= start) {
-    end.setDate(end.getDate() + 1);
-  }
-
-  return {
-    id: createEventId(),
-    title,
-    location,
-    description,
-    start,
-    end,
-  };
-}
-
-function createEventId() {
-  if (globalThis.crypto?.randomUUID) {
-    return globalThis.crypto.randomUUID();
-  }
-  return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-}
-
-function findDate(text, fallbackDate) {
-  const iso = text.match(/\b(20\d{2})-(\d{1,2})-(\d{1,2})\b/);
-  if (iso) {
-    return new Date(Number(iso[1]), Number(iso[2]) - 1, Number(iso[3]));
-  }
-
-  const numeric = text.match(/\b(\d{1,2})[/-](\d{1,2})(?:[/-](\d{2,4}))?\b/);
-  if (numeric) {
-    const year = normalizeYear(numeric[3]) || fallbackDate.getFullYear();
-    return new Date(year, Number(numeric[2]) - 1, Number(numeric[1]));
-  }
-
-  const named = text.match(/\b(\d{1,2})(?:st|nd|rd|th)?\s+([A-Za-z]+)(?:\s+(20\d{2}|\d{2}))?\b/i);
-  if (named && monthNames[named[2].toLowerCase()] !== undefined) {
-    const year = normalizeYear(named[3]) || fallbackDate.getFullYear();
-    return new Date(year, monthNames[named[2].toLowerCase()], Number(named[1]));
-  }
-
-  const dayName = text.match(/\b(Sunday|Monday|Tuesday|Wednesday|Thursday|Friday|Saturday)\b/i);
-  if (dayName) {
-    return nextDateForDay(fallbackDate, dayOffsets[dayName[1].toLowerCase()]);
-  }
-
-  return new Date(fallbackDate);
-}
-
-function findTimeRange(text, defaultDuration) {
-  const range = text.match(/\b(\d{1,2})(?::|\.)(\d{2})\s*(am|pm)?\s*(?:-|–|—|to)\s*(\d{1,2})(?::|\.)(\d{2})\s*(am|pm)?\b/i);
-  if (range) {
-    const startPeriod = range[3] || inferStartPeriod(range[1], range[4], range[6]);
-    return {
-      start: parseTimeParts(range[1], range[2], startPeriod),
-      end: parseTimeParts(range[4], range[5], range[6] || startPeriod),
-    };
-  }
-
-  const simpleRange = text.match(/\b(\d{1,2})\s*(am|pm)?\s*(?:-|–|—|to)\s*(\d{1,2})\s*(am|pm)\b/i);
-  if (simpleRange) {
-    const startPeriod = simpleRange[2] || inferStartPeriod(simpleRange[1], simpleRange[3], simpleRange[4]);
-    return {
-      start: parseTimeParts(simpleRange[1], "00", startPeriod),
-      end: parseTimeParts(simpleRange[3], "00", simpleRange[4]),
-    };
-  }
-
-  const single = text.match(/\b(\d{1,2})(?::|\.)(\d{2})\s*(am|pm)?\b/i) || text.match(/\b(\d{1,2})\s*(am|pm)\b/i);
-  if (!single) {
-    return null;
-  }
-
-  const start = parseTimeParts(single[1], single[2] && /^\d{2}$/.test(single[2]) ? single[2] : "00", single[3] || single[2]);
-  const endDate = new Date(2000, 0, 1, start.hour, start.minute + defaultDuration);
-  return {
-    start,
-    end: { hour: endDate.getHours(), minute: endDate.getMinutes() },
-  };
-}
-
-function findTitle(cells, rowText) {
-  const ignored = /^(date|day|time|start|end|room|location|venue|teacher|tutor|instructor)$/i;
-  const cleanCells = cells
-    .map((cell) => stripKnownBits(cell))
-    .map(cleanText)
-    .filter((cell) => cell && !ignored.test(cell) && !looksMostlyDateTime(cell));
-
-  const longest = cleanCells.sort((a, b) => b.length - a.length)[0];
-  if (longest) {
-    return longest.slice(0, 140);
-  }
-
-  return stripKnownBits(rowText).slice(0, 140);
-}
-
-function findLocation(cells, rowText) {
-  const labelled = rowText.match(/\b(?:room|location|venue|place)\s*:?\s*([^|,;]+)/i);
-  if (labelled) {
-    return cleanText(labelled[1]);
-  }
-
-  const locationCell = cells.find((cell) => /\b(room|building|hall|lab|studio|theatre|online|zoom|teams)\b/i.test(cell));
-  return locationCell ? stripKnownBits(locationCell).slice(0, 120) : "";
-}
-
-function stripKnownBits(text) {
-  return cleanText(text)
-    .replace(/\b(20\d{2})-\d{1,2}-\d{1,2}\b/g, "")
-    .replace(/\b\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4})?\b/g, "")
-    .replace(/\b\d{1,2}(?:st|nd|rd|th)?\s+[A-Za-z]+(?:\s+(?:20\d{2}|\d{2}))?\b/gi, "")
-    .replace(/\b(Sunday|Monday|Tuesday|Wednesday|Thursday|Friday|Saturday)\b/gi, "")
-    .replace(/\b\d{1,2}(?::|\.)\d{2}\s*(?:am|pm)?\s*(?:-|–|—|to)\s*\d{1,2}(?::|\.)\d{2}\s*(?:am|pm)?\b/gi, "")
-    .replace(/\b\d{1,2}\s*(?:am|pm)?\s*(?:-|–|—|to)\s*\d{1,2}\s*(?:am|pm)\b/gi, "")
-    .replace(/\b\d{1,2}(?::|\.)\d{2}\s*(?:am|pm)?\b/gi, "")
-    .replace(/\b(?:room|location|venue|place)\s*:?\s*/gi, "")
-    .replace(/[|,;]\s*$/g, "")
-    .trim();
-}
-
-function looksMostlyDateTime(text) {
-  const stripped = stripKnownBits(text);
-  return stripped.length < 3;
-}
-
-function parseTimeParts(hourValue, minuteValue, period) {
-  let hour = Number(hourValue);
-  const minute = Number(minuteValue || 0);
-  const normalizedPeriod = period ? String(period).toLowerCase() : "";
-
-  if (normalizedPeriod === "pm" && hour < 12) {
-    hour += 12;
-  }
-  if (normalizedPeriod === "am" && hour === 12) {
-    hour = 0;
-  }
-
-  return { hour, minute };
-}
-
-function inferStartPeriod(startHour, endHour, endPeriod) {
-  if (!endPeriod) {
-    return "";
-  }
-  const start = Number(startHour);
-  const end = Number(endHour);
-  if (endPeriod.toLowerCase() === "pm" && start > end) {
-    return "am";
-  }
-  return endPeriod;
-}
-
 function applyTime(date, time) {
   return new Date(date.getFullYear(), date.getMonth(), date.getDate(), time.hour, time.minute);
-}
-
-function nextDateForDay(baseDate, targetDay) {
-  const date = new Date(baseDate);
-  const diff = (targetDay - date.getDay() + 7) % 7;
-  date.setDate(date.getDate() + diff);
-  return date;
-}
-
-function parseDateInput(value) {
-  if (!value) {
-    return new Date();
-  }
-  const [year, month, day] = value.split("-").map(Number);
-  return new Date(year, month - 1, day);
-}
-
-function normalizeYear(value) {
-  if (!value) {
-    return null;
-  }
-  const year = Number(value);
-  return year < 100 ? 2000 + year : year;
 }
 
 function dedupeEvents(event, index, events) {
@@ -1110,6 +836,7 @@ function renderEvents() {
 
   els.eventCount.textContent = String(eventGroups.length);
   els.downloadButton.disabled = state.events.length === 0;
+  els.downloadWeeksButton.disabled = !state.academicYearKey;
 
   if (eventGroups.length === 0) {
     els.summaryText.textContent = "No timetable entries have been extracted yet.";
@@ -1303,6 +1030,7 @@ function buildIcsEventComponent(group) {
     `SUMMARY:${escapeIcs(first.title)}`,
     first.location ? `LOCATION:${escapeIcs(first.location)}` : "",
     `DESCRIPTION:${escapeIcs(buildIcsGroupDescription(group))}`,
+    ...buildIcsAlarmLines(getSelectedAlertMinutes()),
   ];
 
   if (group.interval > 0 && group.events.length > 1) {
@@ -1313,6 +1041,20 @@ function buildIcsEventComponent(group) {
 
   lines.push("END:VEVENT");
   return lines;
+}
+
+function buildIcsAlarmLines(minutes) {
+  if (!minutes) {
+    return [];
+  }
+
+  return [
+    "BEGIN:VALARM",
+    "ACTION:DISPLAY",
+    `DESCRIPTION:${escapeIcs("Upcoming teaching event")}`,
+    `TRIGGER:-PT${minutes}M`,
+    "END:VALARM",
+  ];
 }
 
 function createIcsGroupId(group) {
@@ -1433,10 +1175,158 @@ function foldIcsLine(line) {
   return chunks.join("\r\n");
 }
 
+function getSelectedAlertMinutes() {
+  const value = Number(els.alertMinutes.value);
+
+  return Number.isFinite(value) && value > 0
+    ? value
+    : null;
+}
+
+function downloadTeachingWeeksCalendar() {
+  const academicYear = getSelectedAcademicYearConfig();
+
+  if (!academicYear) {
+    showMessage("No academic year is available yet. Extract a Durham timetable first.");
+    return;
+  }
+
+  const events = buildTeachingWeekMarkerEvents(
+    academicYear,
+    els.includeTermEnds.checked,
+  );
+
+  const calendarName = `${state.academicYearKey} Teaching Weeks`;
+  const ics = buildAllDayIcs(events, calendarName);
+
+  const blob = new Blob([ics], { type: "text/calendar;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+
+  link.href = url;
+  link.download = `${slugify(calendarName)}.ics`;
+
+  document.body.append(link);
+  link.click();
+  link.remove();
+
+  URL.revokeObjectURL(url);
+}
+
+function getSelectedAcademicYearConfig() {
+  if (!state.academicYearKey) {
+    return null;
+  }
+
+  const years = teachingWeekConfig.years;
+  const yearConfig = years[state.academicYearKey];
+
+  return yearConfig
+    ? buildAcademicYearConfig(yearConfig)
+    : null;
+}
+
+function buildTeachingWeekMarkerEvents(academicYear, includeTermEnds) {
+  const events = [];
+
+  academicYear.teachingWeekRanges.forEach((range) => {
+    for (let durhamWeek = range.startDurhamWeek; durhamWeek <= range.endDurhamWeek; durhamWeek += 1) {
+      const teachingWeek = range.startTeachingWeek + (durhamWeek - range.startDurhamWeek);
+      const start = dateForAcademicYearWeekDay(academicYear, durhamWeek, "monday");
+      const end = new Date(start);
+
+      end.setDate(end.getDate() + 1);
+
+      events.push({
+        id: stableHash(`${academicYear.label}|teaching-week|${teachingWeek}`),
+        title: `Week ${teachingWeek}`,
+        description: `${range.term}\nDurham Week ${durhamWeek}`,
+        start,
+        end,
+      });
+    }
+  });
+
+  if (includeTermEnds) {
+    events.push(...buildTermEndMarkerEvents(academicYear));
+  }
+
+  return events;
+}
+
+function buildTermEndMarkerEvents(academicYear) {
+  const termNames = {
+    michaelmas: "Michaelmas",
+    epiphany: "Epiphany",
+    easter: "Easter",
+  };
+
+  return Object.entries(academicYear.termEnds || {}).flatMap(([termKey, value]) => {
+    const start = parseIsoDate(value);
+
+    if (!start) {
+      return [];
+    }
+
+    const end = new Date(start);
+    end.setDate(end.getDate() + 1);
+
+    const termName = termNames[termKey] || termKey;
+
+    return [{
+      id: stableHash(`${academicYear.label}|term-end|${termKey}|${value}`),
+      title: `End of ${termName} Term`,
+      description: `${termName} Term ends`,
+      start,
+      end,
+    }];
+  });
+}
+
+function buildAllDayIcs(events, calendarName) {
+  const lines = [
+    "BEGIN:VCALENDAR",
+    "VERSION:2.0",
+    "PRODID:-//Timetable to Calendar//Static Web App//EN",
+    "CALSCALE:GREGORIAN",
+    `X-WR-CALNAME:${escapeIcs(calendarName)}`,
+  ];
+
+  events.forEach((event) => {
+    lines.push(...buildAllDayIcsEventComponent(event));
+  });
+
+  lines.push("END:VCALENDAR");
+
+  return lines.filter(Boolean).map(foldIcsLine).join("\r\n");
+}
+
+function buildAllDayIcsEventComponent(event) {
+  return [
+    "BEGIN:VEVENT",
+    `UID:${escapeIcs(event.id)}@timetable-to-calendar`,
+    `DTSTAMP:${formatIcsDate(new Date())}`,
+    `DTSTART;VALUE=DATE:${formatIcsDateOnly(event.start)}`,
+    `DTEND;VALUE=DATE:${formatIcsDateOnly(event.end)}`,
+    `SUMMARY:${escapeIcs(event.title)}`,
+    event.description ? `DESCRIPTION:${escapeIcs(event.description)}` : "",
+    "END:VEVENT",
+  ];
+}
+
+function formatIcsDateOnly(date) {
+  const pad = (value) => String(value).padStart(2, "0");
+
+  return [
+    date.getFullYear(),
+    pad(date.getMonth() + 1),
+    pad(date.getDate()),
+  ].join("");
+}
+
 function clearAll() {
   els.htmlInput.value = "";
   els.htmlFileInput.value = "";
-  els.urlInput.value = "";
   state.activities = [];
   state.events = [];
   clearMessage();
